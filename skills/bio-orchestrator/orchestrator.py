@@ -41,8 +41,8 @@ EXTENSION_MAP: dict[str, str] = {
     ".fq.gz": "seq-wrangler",
     ".bam": "seq-wrangler",
     ".cram": "seq-wrangler",
-    ".pdb": "struct-predictor",
-    ".cif": "struct-predictor",
+    ".pdb": "struct-predictor-foldseek",
+    ".cif": "struct-predictor-foldseek",
     ".h5ad": "scrna-orchestrator",
     ".mtx": "scrna-orchestrator",
     ".mtx.gz": "scrna-orchestrator",
@@ -88,6 +88,17 @@ KEYWORD_MAP: dict[str, str] = {
     "structure": "struct-predictor",
     "alphafold": "struct-predictor",
     "fold": "struct-predictor",
+    "foldseek": "struct-predictor-foldseek",
+    "structural homolog": "struct-predictor-foldseek",
+    "structural homologue": "struct-predictor-foldseek",
+    "structural similarity": "struct-predictor-foldseek",
+    "homologous structure": "struct-predictor-foldseek",
+    "similar structure": "struct-predictor-foldseek",
+    "tmscore": "struct-predictor-foldseek",
+    "tm-score": "struct-predictor-foldseek",
+    "structural search": "struct-predictor-foldseek",
+    "search pdb": "struct-predictor-foldseek",
+    "search against pdb": "struct-predictor-foldseek",
     "single-cell": "scrna-orchestrator",
     "scrna": "scrna-orchestrator",
     "cluster": "scrna-orchestrator",
@@ -218,6 +229,30 @@ SCRNA_EMBEDDING_TERMS = (
 
 ILLUMINA_SAMPLE_SHEET_NAMES = {"samplesheet.csv"}
 ILLUMINA_VCF_SUFFIXES = {".vcf", ".vcf.gz"}
+
+# Struct-predictor / Foldseek chain routing terms
+STRUCT_PREDICT_TERMS = (
+    "predict structure", "structure prediction", "protein structure",
+    "alphafold", "boltz", "fold protein", "fold this protein",
+    "fold my protein", "model structure", "model the structure",
+    "predict the structure", "predict my structure",
+)
+STRUCT_SEARCH_TERMS = (
+    "foldseek", "structural homolog", "structural homologue",
+    "structural search", "search pdb", "search against pdb",
+    "tmscore", "tm-score", "structural similarity", "similar structure",
+    "homologous structure", "find structure", "structural match",
+    "find homolog", "find homologue", "find similar",
+    "homologs", "homologues",
+)
+# When the user wants BOTH: predict first, then search
+STRUCT_CHAIN_TERMS = (
+    "predict and search", "predict then search", "fold and search",
+    "structure and homolog", "predict structure and find",
+    "structure prediction and foldseek", "fold then search",
+    "then search pdb", "then find homolog", "then run foldseek",
+)
+
 PRS_INTENT_TERMS = ("prs", "polygenic risk", "risk score", "absolute risk")
 PRS_VCF_TERMS = ("vcf", "wgs", "whole genome")
 # Intents that own the query outright. A risk score mentioned alongside any of
@@ -334,6 +369,39 @@ def detect_skill_from_query(query: str) -> str | None:
 def detect_skill_with_hint_from_query(query: str) -> tuple[str | None, str]:
     """Determine which skill matches a natural language query and explain chain-aware routing."""
     query_lower = query.lower()
+
+    # ── Struct-predictor / Foldseek chain routing ──────────────────────────
+    wants_predict = any(term in query_lower for term in STRUCT_PREDICT_TERMS)
+    wants_search  = any(term in query_lower for term in STRUCT_SEARCH_TERMS)
+    wants_chain   = any(term in query_lower for term in STRUCT_CHAIN_TERMS)
+
+    if wants_chain or (wants_predict and wants_search):
+        return (
+            "struct-predictor",
+            "Detected a two-step structure workflow. First run `struct-predictor` "
+            "to predict the 3-D structure (Boltz-2 → CIF). Then pass the output CIF "
+            "to `struct-predictor-foldseek` to search for structural homologs in PDB/AFDB. "
+            "Example chain:\n"
+            "  clawbio run struct-predictor --input protein.yaml --output /tmp/boltz_out\n"
+            "  clawbio run foldseek --input /tmp/boltz_out/predictions/<name>/<name>_model_0.cif "
+            "--output /tmp/foldseek_out",
+        )
+    if wants_search and not wants_predict:
+        return (
+            "struct-predictor-foldseek",
+            "Detected a structural homology search. Use `foldseek` with an existing "
+            "CIF or PDB file. If you need to predict the structure first, re-ask with "
+            "'predict structure and find homologs'.",
+        )
+    if wants_predict and not wants_search:
+        return (
+            "struct-predictor",
+            "Detected a structure prediction request. Use `struct-predictor` (Boltz-2). "
+            "If you also want to find structural homologs afterwards, re-ask with "
+            "'predict structure and search for homologs'.",
+        )
+    # ── end struct routing ─────────────────────────────────────────────────
+
     has_prs_intent = any(term in query_lower for term in PRS_INTENT_TERMS)
     if has_prs_intent and any(term in query_lower for term in PRS_DTC_TERMS):
         return (
@@ -554,6 +622,8 @@ SKILL_REGISTRY_MAP: dict[str, str] = {
     "rnaseq-de": "rnaseq",
     "diff-visualizer": "diffviz",
     "flow-bio": "flow",
+    "struct-predictor": "struct-predictor",
+    "struct-predictor-foldseek": "foldseek",
 }
 
 
