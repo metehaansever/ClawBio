@@ -1220,6 +1220,20 @@ SKILLS = {
         "no_input_required": True,
         "accepts_genotypes": False,
     },
+    "foldseek": {
+        "script": SKILLS_DIR / "struct-predictor-foldseek" / "struct_predictor_foldseek.py",
+        "demo_args": ["--demo"],
+        "description": "Foldseek structural homology search — query CIF/PDB against PDB, AlphaFold DB, or ESMAtlas; ranked hits by TM-score",
+        "allowed_extra_flags": {
+            "--databases",
+            "--min-tmscore",
+            "--max-hits",
+            "--db-cache",
+            "--threads",
+        },
+        "no_input_required": False,
+        "accepts_genotypes": False,
+    },
 }
 
 try:
