@@ -80,6 +80,8 @@ When the user asks a question, match it to a skill and act:
 | Differential expression visualisation, volcano plot styling, marker heatmap, DE report plots, contrast visualisation | `skills/diff-visualizer/` | Run `diff_visualizer.py` |
 | Proteomics differential expression, LFQ, MaxQuant, DIA-NN, protein DE, proteomics volcano plot | `skills/proteomics-de/` | Run `proteomics_de.py` |
 | Protein structure, AlphaFold, PDB, Boltz | `skills/struct-predictor/` | Run `struct_predictor.py` |
+| Structural homology search, Foldseek, find similar structure, TM-score, search PDB | `skills/struct-predictor-foldseek/` | Run `struct_predictor_foldseek.py` |
+| Check if structure is novel before predicting, gated prediction, predict only if novel | `skills/bio-orchestrator/` | Run `orchestrator.py --gated-struct` |
 | Clinical variant classification, ACMG, AMP, secondary findings, germline VCF interpretation | `skills/clinical-variant-reporter/` | Run `clinical_variant_reporter.py` |
 | CNV/SV classification, copy-number variant ACMG, ClinGen dosage sensitivity, deletion/duplication pathogenicity, structural variant interpretation, haploinsufficiency, triplosensitivity | `skills/cnv-acmg-classifier/` | Run `cnv_acmg_classifier.py` |
 | Reproducibility, Nextflow, Singularity, Conda export | `skills/repro-enforcer/` | Read SKILL.md, apply methodology |

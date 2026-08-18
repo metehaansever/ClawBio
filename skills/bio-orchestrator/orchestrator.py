@@ -627,6 +627,122 @@ SKILL_REGISTRY_MAP: dict[str, str] = {
 }
 
 
+NOVELTY_TMSCORE_THRESHOLD = 0.9  # at or above = known structure, skip prediction
+
+
+def run_gated_struct_prediction(
+    query_cif: Path | None,
+    output_dir: Path,
+    demo: bool = False,
+    min_tmscore: float = DEFAULT_MIN_TMSCORE,
+    databases: str = "pdb",
+    db_cache: Path | None = None,
+) -> dict:
+    """Foldseek-gated structure prediction.
+
+    Step 1 — Run Foldseek on *query_cif*.
+    Step 2 — If top TM-score < NOVELTY_TMSCORE_THRESHOLD (or no hits),
+              the structure is novel: run struct-predictor.
+              Otherwise skip prediction and report the known homolog.
+
+    Args:
+        query_cif:   Path to an existing CIF/PDB, or None when demo=True.
+        output_dir:  Root output directory. Sub-dirs foldseek/ and struct/ are created.
+        demo:        Use bundled demo CIF (Trp-cage) for both steps.
+        min_tmscore: Minimum TM-score for foldseek filtered hits.
+        databases:   Comma-separated foldseek database aliases.
+        db_cache:    Local directory holding foldseek databases.
+
+    Returns:
+        dict with keys:
+          foldseek_result   – result dict from foldseek step
+          struct_result     – result dict from struct-predictor (or None if skipped)
+          prediction_run    – bool: was struct-predictor executed?
+          decision          – human-readable explanation of the gate decision
+          top_hit           – top foldseek hit dict (or None)
+    """
+    import importlib.util as _ilu
+
+    output_dir = Path(output_dir)
+    fs_out = output_dir / "foldseek"
+    struct_out = output_dir / "struct"
+
+    # ── Step 1: Foldseek ──────────────────────────────────────────────────
+    fs_skill = SKILLS_DIR / "struct-predictor-foldseek" / "struct_predictor_foldseek.py"
+    if not fs_skill.exists():
+        raise FileNotFoundError(f"Foldseek skill not found: {fs_skill}")
+
+    _spec = _ilu.spec_from_file_location("struct_predictor_foldseek", fs_skill)
+    _mod = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
+
+    foldseek_result = _mod.run_foldseek_search(
+        input_path=query_cif,
+        output_dir=fs_out,
+        databases=databases,
+        min_tmscore=min_tmscore,
+        db_cache=db_cache,
+        demo=demo,
+    )
+
+    top_hit = foldseek_result.get("top_hit")
+    top_score = top_hit["tmscore"] if top_hit else 0.0
+
+    # ── Gate decision ─────────────────────────────────────────────────────
+    if top_score >= NOVELTY_TMSCORE_THRESHOLD:
+        decision = (
+            f"Known structure found: {top_hit['target']} "
+            f"(TM-score {top_score:.3f} ≥ {NOVELTY_TMSCORE_THRESHOLD}). "
+            f"Structure prediction skipped — the query is structurally identical "
+            f"to an existing PDB entry. Use {top_hit['target']} directly."
+        )
+        return {
+            "foldseek_result": foldseek_result,
+            "struct_result": None,
+            "prediction_run": False,
+            "decision": decision,
+            "top_hit": top_hit,
+        }
+
+    if top_hit:
+        decision = (
+            f"Best homolog: {top_hit['target']} "
+            f"(TM-score {top_score:.3f} < {NOVELTY_TMSCORE_THRESHOLD}). "
+            f"Structure is sufficiently novel — running struct-predictor."
+        )
+    else:
+        decision = (
+            "No structural homologs found in the searched databases. "
+            "Structure is novel — running struct-predictor."
+        )
+
+    # ── Step 2: struct-predictor (only if novel) ──────────────────────────
+    struct_skill = SKILLS_DIR / "struct-predictor" / "struct_predictor.py"
+    if not struct_skill.exists():
+        raise FileNotFoundError(f"struct-predictor skill not found: {struct_skill}")
+
+    _spec2 = _ilu.spec_from_file_location("struct_predictor", struct_skill)
+    _mod2 = _ilu.module_from_spec(_spec2)
+    _spec2.loader.exec_module(_mod2)
+
+    struct_result = _mod2.run_struct_prediction(
+        input_path=query_cif,
+        output_dir=struct_out,
+        demo=demo,
+    )
+
+    return {
+        "foldseek_result": foldseek_result,
+        "struct_result": struct_result,
+        "prediction_run": True,
+        "decision": decision,
+        "top_hit": top_hit,
+    }
+
+
+DEFAULT_MIN_TMSCORE = 0.3
+
+
 def detect_multiple_skills(query: str) -> list[str]:
     """Detect all matching skills from a query (not just the first one).
 
@@ -703,7 +819,88 @@ def main() -> None:
     parser.add_argument("--multi", action="store_true", help="Detect and run all matching skills (not just first)")
     parser.add_argument("--provider", choices=["keyword", "flock"], default="keyword",
                         help="Routing strategy: 'keyword' (default, rule-based) or 'flock' (open-source LLM via FLock API)")
+    parser.add_argument(
+        "--gated-struct",
+        action="store_true",
+        help=(
+            "Run the Foldseek-gated structure prediction chain: "
+            "search for homologs first, only predict if TM-score < 0.9 (novel structure). "
+            "Use --input for a CIF/PDB file, or --demo for the bundled Trp-cage demo."
+        ),
+    )
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="Use built-in demo data (used with --gated-struct).",
+    )
     args = parser.parse_args()
+
+    # ── Foldseek-gated structure prediction ───────────────────────────────
+    if args.gated_struct:
+        output_dir = Path(args.output)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        demo = args.demo
+        query_cif = Path(args.input) if args.input else None
+
+        print("Bio Orchestrator — Foldseek-gated structure prediction")
+        print("=" * 60)
+        print()
+        if demo:
+            print("  Mode: demo (Trp-cage miniprotein)")
+        elif query_cif:
+            print(f"  Query: {query_cif}")
+        else:
+            print("Error: provide --input <structure.cif> or --demo")
+            import sys as _sys
+            _sys.exit(1)
+        print()
+
+        try:
+            result = run_gated_struct_prediction(
+                query_cif=query_cif,
+                output_dir=output_dir,
+                demo=demo,
+            )
+        except RuntimeError as exc:
+            # foldseek not on PATH or binary crashed
+            print(f"\nFoldseek unavailable: {exc}")
+            print(
+                "\nSkipping homology check — running struct-predictor directly.\n"
+                "Install foldseek to enable the gated workflow:\n"
+                "  conda install -c bioconda -c conda-forge foldseek"
+            )
+            result = {
+                "foldseek_result": None,
+                "struct_result": None,
+                "prediction_run": False,
+                "decision": f"Foldseek unavailable: {exc}",
+                "top_hit": None,
+            }
+
+        print(f"\n  Decision: {result['decision']}")
+        if result["prediction_run"]:
+            print("  Struct-predictor: ran (novel structure)")
+        else:
+            print("  Struct-predictor: skipped (known homolog)")
+
+        # Write combined result.json
+        combined = {
+            "mode": "gated_struct_prediction",
+            "demo": demo,
+            "decision": result["decision"],
+            "prediction_run": result["prediction_run"],
+            "top_hit": result.get("top_hit"),
+            "foldseek_output_dir": str(output_dir / "foldseek"),
+            "struct_output_dir": str(output_dir / "struct") if result["prediction_run"] else None,
+        }
+        (output_dir / "result.json").write_text(
+            json.dumps(combined, indent=2), encoding="utf-8"
+        )
+        print(f"\n  Output: {output_dir}/")
+        print(f"  Result: {output_dir / 'result.json'}")
+        print(json.dumps(combined, indent=2))
+        return
+    # ── end gated struct ──────────────────────────────────────────────────
 
     if args.list_skills:
         skills = list_available_skills()

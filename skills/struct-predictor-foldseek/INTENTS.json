@@ -1,0 +1,107 @@
+{
+  "schema": "clawbio.skill_intents.v1",
+  "skill": "foldseek",
+  "description": "Structural homology search with Foldseek. Searches a CIF or PDB file against PDB/AFDB and ranks hits by TM-score. Can gate struct-predictor: only predict if no close homolog exists.",
+  "aliases": [
+    "struct-predictor-foldseek",
+    "foldseek search",
+    "structural search",
+    "structural homology"
+  ],
+  "routes": [
+    {
+      "intent_id": "demo_report",
+      "description": "Run the Foldseek demo with the bundled Trp-cage CIF.",
+      "trigger_terms": [
+        "foldseek demo",
+        "structural search demo",
+        "structural homology demo",
+        "homolog demo",
+        "run foldseek demo"
+      ],
+      "demo_policy": "only_when_explicit",
+      "plan": [
+        {
+          "kind": "skill_run",
+          "skill": "foldseek",
+          "demo": true
+        }
+      ]
+    },
+    {
+      "intent_id": "search_existing_structure",
+      "description": "Search an existing CIF or PDB file for structural homologs.",
+      "trigger_terms": [
+        "foldseek",
+        "structural homolog",
+        "structural search",
+        "search pdb",
+        "find similar structure",
+        "tmscore",
+        "tm-score",
+        "structural similarity"
+      ],
+      "plan": [
+        {
+          "kind": "skill_run",
+          "skill": "foldseek",
+          "slots": {
+            "input": {
+              "required": true,
+              "description": "Path to the CIF or PDB file to search"
+            }
+          },
+          "args": [
+            "--input",
+            "{input}"
+          ]
+        }
+      ]
+    },
+    {
+      "intent_id": "gated_struct_prediction",
+      "description": "Check if the structure is novel using Foldseek before deciding to run struct-predictor. If top TM-score >= 0.9 a known structure exists and prediction is skipped. If top TM-score < 0.9 the structure is novel and struct-predictor is run.",
+      "trigger_terms": [
+        "is it worth predicting",
+        "should i predict",
+        "is it worth running foldseek first",
+        "check if structure exists",
+        "predict if novel",
+        "predict only if novel",
+        "is this structure known",
+        "gate prediction",
+        "gated prediction"
+      ],
+      "plan": [
+        {
+          "kind": "conditional_chain",
+          "description": "Run foldseek first; only run struct-predictor if no near-identical structure exists",
+          "steps": [
+            {
+              "kind": "skill_run",
+              "skill": "foldseek",
+              "demo": true,
+              "label": "foldseek_check",
+              "comment": "Step 1: Search for existing homologs. Produces result.json with top_hit.tmscore."
+            },
+            {
+              "kind": "conditional",
+              "condition": "foldseek_check.top_hit.tmscore < 0.9 or foldseek_check.top_hit == null",
+              "if_true": {
+                "kind": "skill_run",
+                "skill": "struct-predictor",
+                "demo": true,
+                "label": "struct_prediction",
+                "comment": "Step 2 (conditional): Predict structure only if no near-identical homolog found."
+              },
+              "if_false": {
+                "kind": "message",
+                "text": "A near-identical structure already exists in PDB (TM-score {foldseek_check.top_hit.tmscore:.3f} for {foldseek_check.top_hit.target}). Structure prediction skipped — use the existing entry instead."
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
