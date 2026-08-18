@@ -444,7 +444,83 @@ def _generate_report(
     return result
 
 
-def _build_chat_summary(
+def _write_fasta(name: str, sequence: str, path: Path) -> Path:
+    """Write a single-sequence FASTA file. Returns the path."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f">{name}\n{sequence}\n", encoding="utf-8")
+    return path
+
+
+# Known demo sequences for well-studied human proteins
+# These are the canonical UniProt sequences (truncated to first 200 aa for speed)
+_KNOWN_SEQUENCES: dict[str, tuple[str, str]] = {
+    "BRCA1": (
+        "BRCA1_HUMAN",
+        "MDLSALRVEEVQNVINAMQKILECPICLELIKEPVSTKCDHIFCKFCMLKLLNQKKGPSQCPLCKNDITKRS"
+        "LQESTRFSQLVEELLKIICAFQLDTGLEYANSYNKPLHVTYVDVAGPQEALRQLMKTERGGGLSAFLKQRAE"
+        "SFNSAEFKLLQREQAQDLKKQLEELEKHLEAQHKELQAEMEKEARQKLQEVLEQEEQQ",
+    ),
+    "TP53": (
+        "P53_HUMAN",
+        "MEEPQSDPSVEPPLSQETFSDLWKLLPENNVLSPLPSQAMDDLMLSPDDIEQWFTEDPGPDEAPRMPEAAP"
+        "PVAPAPPAAPTPAAPAPAPSWPLSSSVPSQKTYPQGLNGTVNLFRNLNKTKEEFLESLQSRPAGSTEQGLSP"
+        "SHHHQHSAEPEGSSAHSSSSVPSQKTYPQGL",
+    ),
+    "EGFR": (
+        "EGFR_HUMAN",
+        "MRPSGTAGAALLALLAALCPASRALEEKKVCQGTSNKLTQLGTFEDHFLSLQRMFNNCEVVLGNLEITYVQR"
+        "NYDLSFLKTIQEVAGYVLIALNTVERIPLENLQIIRGNMYYENSYALAVLSNYDANKTGLKELPMRNLQEIL"
+        "HGAVRFSNNPALCNVESIQWRDIVSSDFLSNMSMDFQNHLGSCQKCDPSCPNGSCWGAGEENCQKLTKIICP"
+        "RENVHISSRRTMQELAMINEAADAQEMHSS",
+    ),
+}
+
+
+def _resolve_sequence_input(
+    gene_or_sequence: str,
+    tmp_dir: Path,
+) -> Path:
+    """
+    Given a gene name (e.g. 'BRCA1') or a raw amino acid sequence,
+    write a FASTA file and return its path.
+
+    For gene names not in the built-in table, tries to fetch the canonical
+    UniProt sequence via the public REST API (no key required).
+    """
+    upper = gene_or_sequence.strip().upper()
+
+    # Check built-in table first
+    if upper in _KNOWN_SEQUENCES:
+        fasta_id, seq = _KNOWN_SEQUENCES[upper]
+        fasta_path = tmp_dir / f"{upper}.fasta"
+        return _write_fasta(fasta_id, seq, fasta_path)
+
+    # Looks like a raw sequence (only AA characters, no spaces)
+    _AA = set("ACDEFGHIKLMNPQRSTVWYUOBZXJ*-")
+    if all(c.upper() in _AA for c in gene_or_sequence.replace("\n", "").replace(" ", "")):
+        fasta_path = tmp_dir / "query_sequence.fasta"
+        return _write_fasta("query", gene_or_sequence.replace("\n", "").replace(" ", ""), fasta_path)
+
+    # Try UniProt search API
+    try:
+        import urllib.request
+        import urllib.parse
+        query = urllib.parse.quote(f"gene_exact:{upper} AND organism_id:9606 AND reviewed:true")
+        url = f"https://rest.uniprot.org/uniprotkb/search?query={query}&format=fasta&size=1"
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            fasta_text = resp.read().decode("utf-8").strip()
+        if fasta_text.startswith(">"):
+            fasta_path = tmp_dir / f"{upper}.fasta"
+            fasta_path.write_text(fasta_text, encoding="utf-8")
+            print(f"  Fetched sequence for {upper} from UniProt")
+            return fasta_path
+    except Exception as exc:
+        print(f"  WARNING: Could not fetch sequence for '{upper}' from UniProt: {exc}")
+
+    raise ValueError(
+        f"'{gene_or_sequence}' is not a known gene name or valid amino acid sequence. "
+        f"Provide a CIF/PDB file with --input, or a raw AA sequence with --sequence."
+    )
     query_name: str,
     databases: list[str],
     hits: list[dict],
@@ -498,28 +574,27 @@ def run_foldseek_search(
     db_cache: Path | None = None,
     threads: int = 1,
     demo: bool = False,
+    sequence: str | None = None,
 ) -> dict:
     """Run the full Foldseek structural search pipeline.
 
     Args:
-        input_path: Path to query CIF or PDB. Required unless demo=True.
+        input_path: Path to query CIF or PDB. Required unless demo=True or sequence is set.
         output_dir: Where to write the report and artefacts.
         databases: Comma-separated database aliases (pdb, afdb, esm).
         min_tmscore: Minimum TM-score for filtered hit table.
         max_hits: Maximum number of hits reported.
-        db_cache: Local directory holding Foldseek databases. Defaults to ~/.foldseek_dbs/.
+        db_cache: Local directory holding Foldseek databases.
         threads: Number of CPU threads for Foldseek.
         demo: Use the bundled Trp-cage CIF for a quick offline test.
+        sequence: Gene name (e.g. 'BRCA1') or raw amino acid sequence.
+                  When provided, writes a FASTA and uses Foldseek's sequence input mode.
 
     Returns:
         result dict (same content as result.json).
-
-    Raises:
-        ValueError: If neither input_path nor demo is supplied.
-        RuntimeError: If foldseek is not on PATH.
     """
-    if not demo and input_path is None:
-        raise ValueError("Provide --input or --demo.")
+    if not demo and input_path is None and sequence is None:
+        raise ValueError("Provide --input, --sequence, or --demo.")
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -527,7 +602,6 @@ def run_foldseek_search(
     if db_cache is None:
         db_cache = DEFAULT_DB_CACHE
 
-    # Check foldseek availability
     exe = _check_foldseek()
     version = _foldseek_version(exe)
     print(f"  Foldseek: {exe} ({version})")
@@ -536,6 +610,14 @@ def run_foldseek_search(
     if demo:
         query_path = DEMO_STRUCTURE
         print(f"  Demo mode: {DEMO_NAME} (Trp-cage miniprotein, PDB 1L2Y)")
+    elif sequence is not None:
+        with tempfile.TemporaryDirectory(prefix="foldseek_seq_") as _seqtmp:
+            query_path = _resolve_sequence_input(sequence, Path(_seqtmp))
+            # Copy to output_dir so it persists after the tempdir is deleted
+            persistent_fasta = output_dir / query_path.name
+            persistent_fasta.write_text(query_path.read_text())
+        query_path = persistent_fasta
+        print(f"  Sequence query: {sequence[:30]}{'...' if len(sequence) > 30 else ''} → {query_path.name}")
     else:
         query_path = Path(input_path)  # type: ignore[arg-type]
         print(f"  Query: {query_path}")
@@ -655,6 +737,10 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Input structure file (CIF or PDB)",
     )
     parser.add_argument(
+        "--sequence", "-s",
+        help="Gene name (e.g. BRCA1, TP53) or raw amino acid sequence to search",
+    )
+    parser.add_argument(
         "--output", "-o",
         required=True,
         help="Output directory",
@@ -702,9 +788,9 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
-    if not args.input and not args.demo:
+    if not args.input and not args.demo and not args.sequence:
         parser.print_help()
-        print("\nError: provide --input or --demo")
+        print("\nError: provide --input, --sequence, or --demo")
         sys.exit(1)
 
     print("Struct Predictor Foldseek")
@@ -720,6 +806,7 @@ def main() -> None:
         db_cache=Path(args.db_cache),
         threads=args.threads,
         demo=args.demo,
+        sequence=args.sequence if args.sequence else None,
     )
 
 

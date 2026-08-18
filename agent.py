@@ -103,6 +103,9 @@ Rules:
 - If a tool is unavailable (binary not installed), say so clearly and explain
   how to install it, then continue with what you can.
 - Keep answers scientific but accessible.
+- For run_foldseek: if no actual file path is available, do NOT invent one.
+  Leave input_cif empty and the tool will use the built-in demo structure.
+  Use gene_or_sequence for gene names like BRCA1, TP53, EGFR.
 - Include the ClawBio disclaimer at the end of any health-related answer:
   "ClawBio is a research and educational tool. It is not a medical device
    and does not provide clinical diagnoses. Consult a healthcare professional
@@ -119,19 +122,30 @@ TOOLS = [
         "function": {
             "name": "run_foldseek",
             "description": (
-                "Search a protein structure (CIF or PDB) against major structural "
-                "databases (PDB, AlphaFold DB) and rank hits by TM-score. "
-                "Use this to answer questions like: 'do these proteins share structural "
-                "homology?', 'is this protein fold known?', 'find structurally similar proteins'. "
-                "Run this BEFORE struct_predict when you want to check if a structure already "
-                "exists — if TM-score >= 0.9 prediction is unnecessary."
+                "Search a protein against major structural databases (PDB, AlphaFold DB) "
+                "and rank hits by TM-score. "
+                "Use this to answer: 'do these proteins share structural homology?', "
+                "'is this fold known?', 'find structurally similar proteins to BRCA1'. "
+                "You can provide a gene name (BRCA1, TP53, EGFR), a raw amino acid sequence, "
+                "or a CIF/PDB file path. "
+                "Run BEFORE struct_predict to check if a structure already exists — "
+                "if TM-score >= 0.9 the structure is known and prediction is unnecessary. "
+                "For multiple genes, call this tool once per gene."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
+                    "gene_or_sequence": {
+                        "type": "string",
+                        "description": (
+                            "Gene name (e.g. 'BRCA1', 'TP53') or raw amino acid sequence. "
+                            "Use this instead of input_cif when you have a gene name. "
+                            "The skill will fetch the canonical human sequence from UniProt."
+                        ),
+                    },
                     "input_cif": {
                         "type": "string",
-                        "description": "Path to a CIF or PDB file. Leave empty to use demo data.",
+                        "description": "Path to a CIF or PDB file. Use only when you already have a structure file.",
                     },
                     "databases": {
                         "type": "string",
@@ -321,36 +335,67 @@ def execute_tool(name: str, args: dict) -> str:
 
     # ── run_foldseek ───────────────────────────────────────────────────────
     if name == "run_foldseek":
-        out_dir = _skill_output_dir("foldseek")
+        gene_or_seq = args.get("gene_or_sequence", "").strip()
+        input_cif = args.get("input_cif", "").strip()
+
+        # Sanitize: reject hallucinated/placeholder paths that don't exist on disk
+        _placeholder_patterns = (
+            "path/to", "your/", "/path/", "example/",
+            "trp-cage.cif", "trp_cage.cif", "structure.cif", "protein.cif",
+        )
+        if input_cif and (
+            not Path(input_cif).exists()
+            or any(p in input_cif.lower() for p in _placeholder_patterns)
+        ):
+            print(f"    ! input_cif '{input_cif}' not found or placeholder — switching to demo")
+            input_cif = ""
+
+        # Coerce min_tmscore to float regardless of whether LLM sent string or number
+        min_tmscore = args.get("min_tmscore")
+        try:
+            min_tmscore = float(min_tmscore) if min_tmscore is not None else None
+        except (ValueError, TypeError):
+            min_tmscore = None
+
+        # Per-gene output subdirectory so multiple genes don't overwrite each other
+        subdir = gene_or_seq.upper().replace(" ", "_") if gene_or_seq else (
+            Path(input_cif).stem if input_cif else "demo"
+        )
+        out_dir = OUTPUT_DIR / "foldseek" / subdir
+        out_dir.mkdir(parents=True, exist_ok=True)
+
         cmd = [sys.executable, str(SKILLS_DIR / "struct-predictor-foldseek" / "struct_predictor_foldseek.py")]
-        input_cif = args.get("input_cif", "")
-        if input_cif:
+        if gene_or_seq:
+            cmd += ["--sequence", gene_or_seq]
+        elif input_cif:
             cmd += ["--input", input_cif]
         else:
             cmd += ["--demo"]
         if args.get("databases"):
             cmd += ["--databases", args["databases"]]
-        if args.get("min_tmscore") is not None:
-            cmd += ["--min-tmscore", str(args["min_tmscore"])]
+        if min_tmscore is not None:
+            cmd += ["--min-tmscore", str(min_tmscore)]
         cmd += ["--output", str(out_dir)]
 
-        result = _run(cmd, "Foldseek structural search")
+        label = f"Foldseek search: {gene_or_seq or input_cif or 'demo (Trp-cage)'}"
+        result = _run(cmd, label)
         rj = _load_result_json(out_dir)
 
         if rj:
             top = rj.get("top_hit")
+            top_score = top["tmscore"] if top else None
             summary = {
                 "skill": "foldseek",
                 "success": result["success"],
                 "n_hits_raw": rj.get("n_hits_raw", 0),
                 "n_hits_filtered": rj.get("n_hits_filtered", 0),
                 "top_hit": top,
-                "top_tmscore": top["tmscore"] if top else None,
+                "top_tmscore": top_score,
                 "novelty_verdict": (
                     "KNOWN (TM-score >= 0.9, prediction unnecessary)"
-                    if top and top["tmscore"] >= 0.9
+                    if top_score is not None and top_score >= 0.9
                     else "NOVEL (TM-score < 0.9, prediction recommended)"
-                    if top
+                    if top_score is not None
                     else "NO_HITS (no homologs found, structure is novel)"
                 ),
                 "top_hits": rj.get("hits", [])[:5],
