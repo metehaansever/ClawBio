@@ -614,12 +614,8 @@ def run_foldseek_search(
         query_path = DEMO_STRUCTURE
         print(f"  Demo mode: {DEMO_NAME} (Trp-cage miniprotein, PDB 1L2Y)")
     elif sequence is not None:
-        with tempfile.TemporaryDirectory(prefix="foldseek_seq_") as _seqtmp:
-            query_path = _resolve_sequence_input(sequence, Path(_seqtmp))
-            # Copy to output_dir so it persists after the tempdir is deleted
-            persistent_fasta = output_dir / query_path.name
-            persistent_fasta.write_text(query_path.read_text())
-        query_path = persistent_fasta
+        # Write FASTA to output_dir directly — no tempdir needed
+        query_path = _resolve_sequence_input(sequence, output_dir)
         print(f"  Sequence query: {sequence[:30]}{'...' if len(sequence) > 30 else ''} → {query_path.name}")
     else:
         query_path = Path(input_path)  # type: ignore[arg-type]
