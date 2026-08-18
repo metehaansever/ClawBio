@@ -149,19 +149,42 @@ def _run_foldseek_search(
     results_tsv: Path,
     tmp_dir: Path,
     threads: int = 1,
+    is_sequence: bool = False,
 ) -> subprocess.CompletedProcess:
     """Run foldseek easy-search and return the completed process."""
-    cmd = [
-        exe, "easy-search",
-        str(query_path),
-        str(db_path),
-        str(results_tsv),
-        str(tmp_dir),
-        "--format-output", ",".join(_FOLDSEEK_COLS),
-        "--alignment-type", "1",   # TM-align mode
-        "--threads", str(threads),
-        "-v", "1",
-    ]
+    if is_sequence:
+        # FASTA input: use default 3Di+AA alignment (type 2).
+        # TM-align (type 1) requires 3D coordinates — not available from sequence alone.
+        # Use prob (homology probability) as the structural similarity proxy.
+        fmt_cols = [c if c != "alntmscore" else "prob" for c in _FOLDSEEK_COLS]
+        fmt_cols = [c for c in fmt_cols if c != "lddt"]  # lddt also needs 3D coords
+        fmt_cols += ["evalue"]
+        # deduplicate while preserving order
+        seen: set = set()
+        fmt_cols = [c for c in fmt_cols if not (c in seen or seen.add(c))]  # type: ignore
+        cmd = [
+            exe, "easy-search",
+            str(query_path),
+            str(db_path),
+            str(results_tsv),
+            str(tmp_dir),
+            "--format-output", ",".join(fmt_cols),
+            "--alignment-type", "2",   # 3Di+AA (works with FASTA via ProstT5)
+            "--threads", str(threads),
+            "-v", "1",
+        ]
+    else:
+        cmd = [
+            exe, "easy-search",
+            str(query_path),
+            str(db_path),
+            str(results_tsv),
+            str(tmp_dir),
+            "--format-output", ",".join(_FOLDSEEK_COLS),
+            "--alignment-type", "1",   # TM-align (requires 3D structure)
+            "--threads", str(threads),
+            "-v", "1",
+        ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     return result
 
@@ -629,6 +652,9 @@ def run_foldseek_search(
     db_names = [alias for alias, _ in db_list]
     print(f"  Databases: {', '.join(db_names)}")
 
+    # Track whether the query is a sequence (FASTA) or a structure (CIF/PDB)
+    _is_sequence_query = sequence is not None and not demo
+
     # Run search against each database; merge results
     all_hits_raw: list[dict] = []
 
@@ -657,6 +683,7 @@ def run_foldseek_search(
                 results_tsv=results_tsv,
                 tmp_dir=tmp_path / f"fs_tmp_{db_idx}",
                 threads=threads,
+                is_sequence=_is_sequence_query,
             )
 
             if proc.returncode != 0:
