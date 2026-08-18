@@ -195,7 +195,11 @@ def _run_foldseek_search(
 
 
 def _parse_hits(tsv_path: Path) -> list[dict]:
-    """Parse Foldseek TSV output into a list of hit dicts."""
+    """Parse Foldseek TSV output into a list of hit dicts.
+
+    Handles both structure queries (alntmscore column) and sequence queries
+    (prob column instead — mapped to alntmscore for uniform downstream use).
+    """
     if not tsv_path.exists() or tsv_path.stat().st_size == 0:
         return []
 
@@ -206,24 +210,51 @@ def _parse_hits(tsv_path: Path) -> list[dict]:
             if not line:
                 continue
             parts = line.split("\t")
-            if len(parts) < len(_FOLDSEEK_COLS):
-                # Pad missing columns with empty string
-                parts += [""] * (len(_FOLDSEEK_COLS) - len(parts))
+
+            # Detect columns by field count:
+            # 14 cols = full structure search (includes alntmscore + lddt)
+            # 13 cols = sequence search (prob instead of alntmscore, no lddt)
+            # 12 cols = basic BLAST output (no structural scores)
+            if len(parts) >= len(_FOLDSEEK_COLS):
+                cols = _FOLDSEEK_COLS
+            elif len(parts) == 13:
+                cols = ["query", "target", "pident", "alnlen", "mismatch",
+                        "gapopen", "qstart", "qend", "tstart", "tend",
+                        "evalue", "bits", "prob"]
+            else:
+                cols = ["query", "target", "pident", "alnlen", "mismatch",
+                        "gapopen", "qstart", "qend", "tstart", "tend",
+                        "evalue", "bits"]
+                if len(parts) > 12:
+                    cols += [f"extra_{i}" for i in range(len(parts) - 12)]
+
+            # Pad if needed
+            if len(parts) < len(cols):
+                parts += [""] * (len(cols) - len(parts))
+
             hit: dict = {}
-            for i, col in enumerate(_FOLDSEEK_COLS):
-                raw = parts[i]
-                if col in ("pident", "tmscore", "rmsd", "evalue", "bits"):
+            for i, col in enumerate(cols):
+                raw = parts[i] if i < len(parts) else ""
+                if col in ("pident", "alntmscore", "lddt", "prob", "evalue", "bits"):
                     try:
                         hit[col] = float(raw)
                     except ValueError:
                         hit[col] = 0.0
-                elif col in ("alnlen", "mismatch", "gapopen", "qstart", "qend", "tstart", "tend"):
+                elif col in ("alnlen", "mismatch", "gapopen",
+                             "qstart", "qend", "tstart", "tend"):
                     try:
                         hit[col] = int(raw)
                     except ValueError:
                         hit[col] = 0
                 else:
                     hit[col] = raw
+
+            # Normalise: map prob → alntmscore when no structural score present
+            if "alntmscore" not in hit:
+                hit["alntmscore"] = hit.get("prob", 0.0)
+            if "lddt" not in hit:
+                hit["lddt"] = 0.0
+
             hits.append(hit)
     return hits
 
