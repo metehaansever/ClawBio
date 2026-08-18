@@ -521,6 +521,9 @@ def _resolve_sequence_input(
         f"'{gene_or_sequence}' is not a known gene name or valid amino acid sequence. "
         f"Provide a CIF/PDB file with --input, or a raw AA sequence with --sequence."
     )
+
+
+def _build_chat_summary(
     query_name: str,
     databases: list[str],
     hits: list[dict],
