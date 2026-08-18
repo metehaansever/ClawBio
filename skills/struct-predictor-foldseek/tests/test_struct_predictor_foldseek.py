@@ -62,8 +62,8 @@ def _make_hit(
         "tend": 20,
         "evalue": evalue,
         "bits": 100.0,
-        "tmscore": tmscore,
-        "rmsd": rmsd,
+        "alntmscore": tmscore,
+        "lddt": 0.85,
     }
 
 
@@ -188,18 +188,18 @@ class TestParseHits:
 
     def test_invalid_float_defaults_to_zero(self, tmp_path):
         tsv = tmp_path / "bad.tsv"
-        # Write a row with "N/A" in the tmscore column
-        row_vals = ["query", "target", "0.5", "20", "0", "0", "1", "20", "1", "20", "1e-5", "100", "N/A", "0.5"]
+        # Write a row with "N/A" in the alntmscore column
+        row_vals = ["query", "target", "0.5", "20", "0", "0", "1", "20", "1", "20", "1e-5", "100", "N/A", "0.85"]
         tsv.write_text("\t".join(row_vals) + "\n")
         hits = _parse_hits(tsv)
-        assert hits[0]["tmscore"] == 0.0
+        assert hits[0]["alntmscore"] == 0.0
 
     def test_numeric_columns_are_floats_or_ints(self, tmp_path):
         hit = _make_hit()
         tsv = _write_tsv(tmp_path, [hit])
         parsed = _parse_hits(tsv)[0]
-        assert isinstance(parsed["tmscore"], float)
-        assert isinstance(parsed["rmsd"], float)
+        assert isinstance(parsed["alntmscore"], float)
+        assert isinstance(parsed["lddt"], float)
         assert isinstance(parsed["alnlen"], int)
 
 
@@ -213,12 +213,12 @@ class TestFilterAndRankHits:
         hits = [_make_hit(f"H{i}", tmscore=i * 0.1) for i in range(11)]
         result = _filter_and_rank_hits(hits, min_tmscore=0.5, max_hits=100)
         for h in result:
-            assert h["tmscore"] >= 0.5
+            assert h["alntmscore"] >= 0.5
 
     def test_sorted_by_tmscore_descending(self):
         hits = [_make_hit(f"H{i}", tmscore=i * 0.1) for i in range(11)]
         result = _filter_and_rank_hits(hits, min_tmscore=0.0, max_hits=100)
-        scores = [h["tmscore"] for h in result]
+        scores = [h["alntmscore"] for h in result]
         assert scores == sorted(scores, reverse=True)
 
     def test_max_hits_respected(self):

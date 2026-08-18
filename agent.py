@@ -54,9 +54,18 @@ except ImportError:
 # Config
 # ---------------------------------------------------------------------------
 
-LLM_API_KEY   = os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
+LLM_API_KEY   = (
+    os.environ.get("LLM_API_KEY")
+    or os.environ.get("OPENAI_API_KEY")
+    or os.environ.get("NEBIUS_API_KEY")
+    or ""
+)
 LLM_BASE_URL  = os.environ.get("LLM_BASE_URL", "")
-MODEL         = os.environ.get("CLAWBIO_MODEL", "meta-llama/Meta-Llama-3.1-70B-Instruct")
+MODEL         = os.environ.get("CLAWBIO_MODEL", "meta-llama/Llama-3.3-70B-Instruct")
+
+# Auto-detect Nebius base URL if only NEBIUS_API_KEY is set
+if not LLM_BASE_URL and os.environ.get("NEBIUS_API_KEY") and not os.environ.get("LLM_API_KEY"):
+    LLM_BASE_URL = "https://api.studio.nebius.com/v1"
 SKILLS_DIR    = _ROOT / "skills"
 OUTPUT_DIR    = _ROOT / "output" / f"agent_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 

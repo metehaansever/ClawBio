@@ -56,11 +56,15 @@ DEMO_NAME = "Trpcage"
 DEFAULT_DB_CACHE = Path.home() / ".foldseek_dbs"
 
 # Foldseek column order for easy-search TSV output
+# Reference: https://github.com/steineggerlab/foldseek/blob/master/README.md
 _FOLDSEEK_COLS = [
     "query", "target", "pident", "alnlen", "mismatch",
     "gapopen", "qstart", "qend", "tstart", "tend",
-    "evalue", "bits", "tmscore", "rmsd",
+    "evalue", "bits", "alntmscore", "lddt",
 ]
+
+# Internal alias → canonical column name for TM-score
+_TMSCORE_COL = "alntmscore"
 
 # Supported database aliases → foldseek database name
 _DB_ALIASES: dict[str, str] = {
@@ -207,8 +211,8 @@ def _filter_and_rank_hits(
     max_hits: int,
 ) -> list[dict]:
     """Filter by TM-score threshold and return top N, ranked by TM-score descending."""
-    filtered = [h for h in hits if h.get("tmscore", 0.0) >= min_tmscore]
-    filtered.sort(key=lambda h: h.get("tmscore", 0.0), reverse=True)
+    filtered = [h for h in hits if h.get(_TMSCORE_COL, 0.0) >= min_tmscore]
+    filtered.sort(key=lambda h: h.get(_TMSCORE_COL, 0.0), reverse=True)
     return filtered[:max_hits]
 
 
@@ -231,9 +235,6 @@ def _write_tmscore_figure(hits: list[dict], figures_dir: Path) -> Path:
     if not top:
         return figures_dir / "tmscore_hits.png"
 
-    labels = [h["target"] for h in top]
-    scores = [h["tmscore"] for h in top]
-
     # Color bars by TM-score band
     colors = []
     for s in scores:
@@ -247,6 +248,9 @@ def _write_tmscore_figure(hits: list[dict], figures_dir: Path) -> Path:
             colors.append("#e67e22")
         else:
             colors.append("#e74c3c")
+
+    labels = [h["target"] for h in top]
+    scores = [h[_TMSCORE_COL] for h in top]
 
     fig, ax = plt.subplots(figsize=(9, max(3, 0.35 * len(top) + 1.5)))
     y_pos = np.arange(len(top))
@@ -345,8 +349,8 @@ def _generate_report(
         lines.append(f"| Field | Value |")
         lines.append(f"|-------|-------|")
         lines.append(f"| Target | `{top_hit['target']}` |")
-        lines.append(f"| TM-score | {top_hit['tmscore']:.4f} ({_tmscore_band(top_hit['tmscore'])}) |")
-        lines.append(f"| RMSD | {top_hit['rmsd']:.2f} Å |")
+        lines.append(f"| TM-score | {top_hit[_TMSCORE_COL]:.4f} ({_tmscore_band(top_hit[_TMSCORE_COL])}) |")
+        lines.append(f"| LDDT | {top_hit['lddt']:.3f} |")
         lines.append(f"| Seq. identity | {top_hit['pident'] * 100:.1f}% |")
         lines.append(f"| E-value | {top_hit['evalue']:.2e} |")
         lines.append(f"| Alignment length | {top_hit['alnlen']} residues |")
@@ -362,12 +366,12 @@ def _generate_report(
     # Hits table
     if hits_filtered:
         lines.append("## Top Structural Hits\n")
-        lines.append("| Rank | Target | TM-score | RMSD (Å) | Seq. ID | E-value | Interpretation |")
-        lines.append("|------|--------|----------|-----------|---------|---------|----------------|")
+        lines.append("| Rank | Target | TM-score | LDDT | Seq. ID | E-value | Interpretation |")
+        lines.append("|------|--------|----------|------|---------|---------|----------------|")
         for i, h in enumerate(hits_filtered[:20], 1):
             lines.append(
-                f"| {i} | `{h['target']}` | {h['tmscore']:.4f} | {h['rmsd']:.2f} "
-                f"| {h['pident']*100:.1f}% | {h['evalue']:.2e} | {_tmscore_band(h['tmscore'])} |"
+                f"| {i} | `{h['target']}` | {h[_TMSCORE_COL]:.4f} | {h['lddt']:.3f} "
+                f"| {h['pident']*100:.1f}% | {h['evalue']:.2e} | {_tmscore_band(h[_TMSCORE_COL])} |"
             )
         lines.append("")
 
@@ -409,8 +413,8 @@ def _generate_report(
         "min_tmscore_threshold": min_tmscore,
         "top_hit": {
             "target": top_hit["target"],
-            "tmscore": top_hit["tmscore"],
-            "rmsd": top_hit["rmsd"],
+            "tmscore": top_hit[_TMSCORE_COL],
+            "lddt": top_hit["lddt"],
             "seqid": top_hit["pident"],
             "evalue": top_hit["evalue"],
         } if top_hit else None,
@@ -418,8 +422,8 @@ def _generate_report(
             {
                 "rank": i + 1,
                 "target": h["target"],
-                "tmscore": h["tmscore"],
-                "rmsd": h["rmsd"],
+                "tmscore": h[_TMSCORE_COL],
+                "lddt": h["lddt"],
                 "seqid": h["pident"],
                 "evalue": h["evalue"],
                 "alnlen": h["alnlen"],
@@ -451,11 +455,11 @@ def _build_chat_summary(
     if top_hit:
         lines.append(
             f"  Top hit: **{top_hit['target']}** "
-            f"(TM-score {top_hit['tmscore']:.3f}, RMSD {top_hit['rmsd']:.2f} Å, "
+            f"(TM-score {top_hit[_TMSCORE_COL]:.3f}, "
             f"seqid {top_hit['pident']*100:.1f}%)"
         )
         lines.append(
-            f"  Interpretation: {_tmscore_band(top_hit['tmscore'])}"
+            f"  Interpretation: {_tmscore_band(top_hit[_TMSCORE_COL])}"
         )
         lines.append(f"  {len(hits)} hits passed the TM-score threshold.")
     else:
@@ -469,13 +473,13 @@ def _build_suggested_actions(top_hit: dict | None) -> list[str]:
     if top_hit is None:
         return ["Run with --min-tmscore 0.1 to see low-confidence hits"]
     actions = []
-    if top_hit["tmscore"] >= 0.5:
+    if top_hit[_TMSCORE_COL] >= 0.5:
         pdb_id = top_hit["target"].split("_")[0].upper()
         actions.append(
             f"Fetch PDB entry {pdb_id} for detailed comparison: "
             f"https://www.rcsb.org/structure/{pdb_id}"
         )
-    if top_hit["tmscore"] < 0.7:
+    if top_hit[_TMSCORE_COL] < 0.7:
         actions.append("Consider searching additional databases with --databases pdb,afdb")
     return actions
 
